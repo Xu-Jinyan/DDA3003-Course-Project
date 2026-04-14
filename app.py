@@ -1,10 +1,13 @@
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 from flask_cors import CORS
 from data_service import DataService
 import traceback
 
 # 创建Flask应用实例
-app = Flask(__name__, static_folder='.', static_url_path='')
+app = Flask(__name__,
+           static_folder='.',
+           static_url_path='',
+           template_folder='.')
 
 # 启用CORS，允许前端跨域请求
 CORS(app, resources={
@@ -14,6 +17,18 @@ CORS(app, resources={
         "allow_headers": ["Content-Type"]
     }
 })
+
+# 提供静态文件路由
+@app.route('/static/<path:path>')
+def send_static(path):
+    return send_from_directory('static', path)
+
+# 添加缓存控制头
+@app.after_request
+def add_cache_control(response):
+    if request.path.startswith('/static/'):
+        response.cache_control.max_age = 86400  # 24小时缓存
+    return response
 
 # 创建数据服务实例
 data_service = DataService()
