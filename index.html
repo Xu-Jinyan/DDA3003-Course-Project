@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Pandemic-Flight Global Watcher (PFGW)</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%; background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; overflow: hidden;
+        }
+        #map-container { width: 100%; height: 100vh; }
+        
+        /* 顶部全局数据板 */
+        #dashboard { position: absolute; top: 20px; left: 20px; background: rgba(22, 27, 34, 0.8); padding: 15px 25px; border-radius: 8px; border: 1px solid #30363d; pointer-events: none; backdrop-filter: blur(5px); }
+        #dashboard h1 { margin: 0 0 10px 0; font-size: 18px; color: #58a6ff; }
+        .stat-row { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 5px; }
+        .stat-label { color: #8b949e; font-size: 14px; }
+        .stat-value { font-weight: bold; font-size: 16px; color: #ff7b72; }
+
+        /* 底部时间轴控制台 */
+        #timeline-controls { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); background: rgba(22, 27, 34, 0.9); padding: 15px 30px; border-radius: 30px; display: flex; align-items: center; gap: 15px; border: 1px solid #30363d; width: 60%; max-width: 800px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        #play-btn { background: #238636; color: white; border: none; padding: 8px 20px; border-radius: 20px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        #play-btn:hover { background: #2ea043; }
+        #time-slider { flex-grow: 1; cursor: pointer; accent-color: #ff7b72; }
+        #current-date { font-weight: bold; color: #fff; min-width: 100px; text-align: center; }
+
+        /* 悬浮提示框 (Tooltip) */
+        #tooltip { position: absolute; background: rgba(0,0,0,0.8); color: #fff; padding: 10px; border-radius: 5px; border: 1px solid #ff7b72; pointer-events: none; opacity: 0; transition: opacity 0.2s; font-size: 13px; z-index: 10; }
+
+        /* D3 元素样式 */
+        .country { stroke: #30363d; stroke-width: 0.5px; transition: fill 0.3s; }
+        .country:hover { stroke: #ffffff; stroke-width: 1.5px; }
+        .flight-path { fill: none; stroke: #ff7b72; stroke-width: 1.5px; opacity: 0.6; stroke-dasharray: 4, 4; animation: dash 2s linear infinite; }
+        .airport { fill: #58a6ff; stroke: #fff; stroke-width: 1px; }
+
+        @keyframes dash { to { stroke-dashoffset: -8; } }
+    </style>
+</head>
+<body>
+
+    <div id="map-container"></div>
+
+    <div id="dashboard">
+        <h1>🌍 PFGW 全局监控板</h1>
+        <div class="stat-row">
+            <span class="stat-label">全球活跃病例:</span>
+            <span class="stat-value" id="global-cases">0</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">高风险航班数:</span>
+            <span class="stat-value" id="active-flights">0</span>
+        </div>
+    </div>
+
+    <div id="timeline-controls">
+        <button id="play-btn">播放 (Play)</button>
+        <input type="range" id="time-slider" min="0" max="100" value="0">
+        <span id="current-date">2020-01-01</span>
+    </div>
+
+    <div id="tooltip"></div>
+
+    <script>
+        // ==========================================
+        // 模块 1: 后端算法与数据接口预留 (Data & Algorithm)
+        // ==========================================
+        
+        // 真实数据接口占位符
+        async function fetchRealWHOData(date) { /* TODO: Fetch WHO API */ }
+        async function fetchRealFlightData(date) { /* TODO: Fetch OpenFlights DB */ }
+
+        // Mock 枢纽机场坐标 [经度, 纬度]
+        const airports = [
+            { id: "PEK", name: "北京", coords: [116.59, 40.08] },
+            { id: "JFK", name: "纽约", coords: [-73.77, 40.64] },
+            { id: "LHR", name: "伦敦", coords: [-0.45, 51.47] },
+            { id: "MXP", name: "米兰", coords: [8.72, 45.63] },
+            { id: "GRU", name: "圣保罗", coords: [-46.47, -23.43] },
+            { id: "SYD", name: "悉尼", coords: [151.17, -33.94] },
+            { id: "JNB", name: "约翰内斯堡", coords: [28.24, -26.13] }
+        ];
+
+        // 后端风险计算引擎 (Mock)
+        class PandemicEngine {
+            constructor() {
+                this.startDate = new Date('2020-01-01').getTime();
+                this.endDate = new Date('2023-12-31').getTime();
+                this.totalDays = (this.endDate - this.startDate) / (1000 * 3600 * 24);
+            }
+
+            // 根据时间进度（0-100）生成推演数据
+            getSnapshot(progressPercent) {
+                const currentDate = new Date(this.startDate + (this.totalDays * progressPercent / 100) * (1000 * 3600 * 24));
+                
+                // 模拟病毒爆发逻辑：进度越高，感染率越高，主要集中在特定区域
+                const infectionMultiplier = Math.pow(progressPercent / 100, 2); 
+                let globalCases = 0;
+                
+                // 随机生成各国的感染数据
+                const countryData = {};
+                // 这里用简化的逻辑，进度越大，风险越高
+                d3.selectAll('.country').each(function(d) {
+                    const baseRisk = Math.random(); 
+                    const currentRisk = Math.min(1, baseRisk * infectionMultiplier * 2);
+                    const cases = Math.floor(currentRisk * 1000000);
+                    globalCases += cases;
+                    countryData[d.id] = { risk: currentRisk, cases: cases };
+                });
+
+                // 模拟航班动态：疫情越严重，高风险航班出现，但总航班量可能因"熔断"减少
+                const activeFlights = [];
+                const flightCount = Math.floor(Math.random() * 10) + 3; // 随机 3-12 条航班
+                for(let i=0; i<flightCount; i++) {
+                    const source = airports[Math.floor(Math.random() * airports.length)];
+                    let target = airports[Math.floor(Math.random() * airports.length)];
+                    while(target.id === source.id) target = airports[Math.floor(Math.random() * airports.length)]; // 确保起降不同
+                    
+                    activeFlights.push({ source: source.coords, target: target.coords });
+                }
+
+                return {
+                    date: currentDate.toISOString().split('T')[0],
+                    globalCases: globalCases,
+                    countryData: countryData,
+                    flights: activeFlights
+                };
+            }
+        }
+
+        const engine = new PandemicEngine();
+
+        // ==========================================
+        // 模块 2: 前端可视化引擎 (D3.js Visualization)
+        // ==========================================
+        
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const svg = d3.select("#map-container").append("svg").attr("width", width).attr("height", height);
+        
+        // 采用 D3 官方推荐的自然地球投影
+        const projection = d3.geoNaturalEarth1().scale(width / 5.5).translate([width / 2, height / 2]);
+        const path = d3.geoPath().projection(projection);
+
+        // 颜色映射 (Color Scale): 深灰 -> 暗红 -> 黑
+        const colorScale = d3.scaleSequential(d3.interpolateYlOrRd).domain([0, 1]);
+
+        const mapLayer = svg.append("g").attr("class", "map-layer");
+        const flightLayer = svg.append("g").attr("class", "flight-layer");
+        const airportLayer = svg.append("g").attr("class", "airport-layer");
+        const tooltip = d3.select("#tooltip");
+
+        // 加载真实的 GeoJSON 世界地图数据 (使用开源 URL)
+        d3.json("https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson").then(function(topo) {
+            
+            // 渲染国家
+            mapLayer.selectAll("path")
+                .data(topo.features)
+                .enter()
+                .append("path")
+                .attr("class", "country")
+                .attr("d", path)
+                .attr("fill", "#21262d")
+                .on("mouseover", function(event, d) {
+                    const data = d.properties;
+                    tooltip.transition().duration(200).style("opacity", 1);
+                    tooltip.html(`<b>${data.name}</b><br/>当前确诊: 加载中...`)
+                           .style("left", (event.pageX + 15) + "px")
+                           .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", function() {
+                    tooltip.transition().duration(500).style("opacity", 0);
+                });
+
+            // 渲染机场节点
+            airportLayer.selectAll("circle")
+                .data(airports)
+                .enter()
+                .append("circle")
+                .attr("class", "airport")
+                .attr("cx", d => projection(d.coords)[0])
+                .attr("cy", d => projection(d.coords)[1])
+                .attr("r", 4);
+
+            // 初始化第一次数据渲染
+            updateVisuals(0);
+        });
+
+        // ==========================================
+        // 模块 3: 交互与数据绑定逻辑 (Interaction)
+        // ==========================================
+
+        const slider = document.getElementById('time-slider');
+        const playBtn = document.getElementById('play-btn');
+        let playInterval;
+        let isPlaying = false;
+
+        // 核心更新函数：连接前后端
+        function updateVisuals(progress) {
+            const snapshot = engine.getSnapshot(progress);
+            
+            // 1. 更新 UI 面板
+            document.getElementById('current-date').innerText = snapshot.date;
+            document.getElementById('global-cases').innerText = snapshot.globalCases.toLocaleString();
+            document.getElementById('active-flights').innerText = snapshot.flights.length;
+
+            // 2. 更新地图热力图
+            mapLayer.selectAll(".country").attr("fill", function(d) {
+                const countryRisk = snapshot.countryData[d.id] ? snapshot.countryData[d.id].risk : 0;
+                // 如果风险极低保持基础深色，否则映射热力颜色
+                return countryRisk < 0.05 ? "#21262d" : colorScale(countryRisk);
+            })
+            // 更新 Tooltip 数据绑定
+            .on("mouseover", function(event, d) {
+                const cases = snapshot.countryData[d.id] ? snapshot.countryData[d.id].cases : 0;
+                tooltip.transition().duration(200).style("opacity", 1);
+                tooltip.html(`<b>${d.properties.name}</b><br/>当前活跃确诊: <span style="color:#ff7b72">${cases.toLocaleString()}</span>`)
+                       .style("left", (event.pageX + 15) + "px")
+                       .style("top", (event.pageY - 28) + "px");
+            });
+
+            // 3. 更新航班动态轨迹 (Great Circle Arcs)
+            // 绑定数据
+            const flights = flightLayer.selectAll(".flight-path").data(snapshot.flights);
+            
+            // 移除旧航线
+            flights.exit().remove();
+            
+            // 绘制新航线
+            flights.enter().append("path")
+                .attr("class", "flight-path")
+                .merge(flights)
+                .attr("d", d => {
+                    // 使用 D3 的 geoPath 自动计算大圆航线 (抛物线效果)
+                    const route = { type: "LineString", coordinates: [d.source, d.target] };
+                    return path(route);
+                });
+        }
+
+        // 监听拖动条
+        slider.addEventListener('input', (e) => {
+            updateVisuals(e.target.value);
+        });
+
+        // 播放/暂停逻辑
+        playBtn.addEventListener('click', () => {
+            if (isPlaying) {
+                clearInterval(playInterval);
+                playBtn.innerText = "播放 (Play)";
+                playBtn.style.background = "#238636";
+            } else {
+                playBtn.innerText = "暂停 (Pause)";
+                playBtn.style.background = "#b62324";
+                playInterval = setInterval(() => {
+                    let val = parseInt(slider.value);
+                    if (val >= 100) {
+                        clearInterval(playInterval);
+                        isPlaying = false;
+                        playBtn.innerText = "重新播放 (Replay)";
+                        playBtn.style.background = "#238636";
+                        return;
+                    }
+                    slider.value = val + 1;
+                    updateVisuals(slider.value);
+                }, 150); // 每 150ms 走一天
+            }
+            isPlaying = !isPlaying;
+        });
+
+        // 窗口缩放自适应
+        window.addEventListener('resize', () => {
+            const newWidth = window.innerWidth;
+            const newHeight = window.innerHeight;
+            svg.attr("width", newWidth).attr("height", newHeight);
+            projection.scale(newWidth / 5.5).translate([newWidth / 2, newHeight / 2]);
+            mapLayer.selectAll("path").attr("d", path);
+            airportLayer.selectAll("circle").attr("cx", d => projection(d.coords)[0]).attr("cy", d => projection(d.coords)[1]);
+            flightLayer.selectAll("path").attr("d", d => path({ type: "LineString", coordinates: [d.source, d.target] }));
+        });
+    </script>
+</body>
+</html>
