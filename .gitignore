@@ -100,3 +100,7 @@ tmp/
 
 # Ignore accidental requirements corruption:
 =*.0
+# Large data files - DO NOT COMMIT
+data/clean/*.parquet
+data/WHO-COVID-19-global-data.xlsx
+data/flightlist_*.csv.gz
