@@ -26,6 +26,9 @@ class DataService:
         # 航班数据缓存
         self.flight_cache = {}
 
+        # 全局趋势缓存
+        self._global_trend_cache = None
+
         # ISO2到ISO3国家代码映射（WHO数据使用ISO2，GeoJSON使用ISO3）
         self.iso2_to_iso3_mapping = {
             'AF': 'AFG', 'AL': 'ALB', 'DZ': 'DZA', 'AS': 'ASM', 'AD': 'AND', 'AO': 'AGO',
@@ -384,3 +387,64 @@ class DataService:
                 continue
         
         return airports
+
+    def get_global_trend(self):
+        """返回全局疫情趋势（按日期汇总所有国家），带缓存"""
+        if self.who_data is None:
+            return []
+        if self._global_trend_cache is not None:
+            return self._global_trend_cache
+        try:
+            trend_df = self.who_data.groupby('Date_reported').agg(
+                globalCases=('Cumulative_cases', 'sum'),
+                globalNewCases=('New_cases', 'sum')
+            ).reset_index().sort_values('Date_reported')
+
+            result = []
+            for _, row in trend_df.iterrows():
+                result.append({
+                    'date': row['Date_reported'].strftime('%Y-%m-%d'),
+                    'globalCases': int(row['globalCases']) if pd.notna(row['globalCases']) else 0,
+                    'globalNewCases': int(row['globalNewCases']) if pd.notna(row['globalNewCases']) else 0
+                })
+            self._global_trend_cache = result
+            return result
+        except Exception as e:
+            print(f"Error computing global trend: {e}")
+            return []
+
+    def get_country_history(self, iso3_code):
+        """返回指定国家（ISO3代码）的全部历史疫情数据"""
+        if self.who_data is None:
+            return []
+        try:
+            iso2_code = None
+            for k, v in self.iso2_to_iso3_mapping.items():
+                if v == iso3_code:
+                    iso2_code = k
+                    break
+            if iso2_code is None:
+                return []
+
+            country_df = self.who_data[
+                self.who_data['Country_code'] == iso2_code
+            ].sort_values('Date_reported')
+
+            if country_df.empty:
+                return []
+
+            result = []
+            for _, row in country_df.iterrows():
+                entry = {
+                    'date': row['Date_reported'].strftime('%Y-%m-%d'),
+                    'cases': int(row['Cumulative_cases']) if pd.notna(row['Cumulative_cases']) else 0,
+                    'newCases': int(row['New_cases']) if pd.notna(row['New_cases']) else 0,
+                }
+                for col, key in [('Cumulative_deaths', 'deaths'), ('New_deaths', 'newDeaths')]:
+                    if col in self.who_data.columns:
+                        entry[key] = int(row[col]) if pd.notna(row[col]) else 0
+                result.append(entry)
+            return result
+        except Exception as e:
+            print(f"Error getting country history for {iso3_code}: {e}")
+            return []

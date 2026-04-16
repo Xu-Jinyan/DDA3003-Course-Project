@@ -182,6 +182,30 @@ def get_snapshot():
             'traceback': traceback.format_exc()
         }), 500
 
+@app.route('/api/global-trend', methods=['GET'])
+def get_global_trend():
+    """获取全局疫情趋势（所有日期的汇总数据，用于前端趋势图）"""
+    try:
+        trend = data_service.get_global_trend()
+        return jsonify({'trend': trend})
+    except Exception as e:
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+@app.route('/api/country-history', methods=['GET'])
+def get_country_history():
+    """获取指定国家的历史疫情数据"""
+    try:
+        country = request.args.get('country', None)
+        if not country:
+            return jsonify({
+                'error': 'country parameter required',
+                'usage': '/api/country-history?country=USA'
+            }), 400
+        history = data_service.get_country_history(country)
+        return jsonify({'country': country, 'history': history})
+    except Exception as e:
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
 # 错误处理
 @app.errorhandler(404)
 def not_found(error):

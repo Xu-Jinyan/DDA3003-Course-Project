@@ -79,28 +79,14 @@ server.log
 *.tmp
 *~
 
-# Data files (don't commit large data)
-# If you want to track specific small data files, use negative pattern:
-# !data/small_file.json
+# Data files — large binaries, do not commit
 data/*.csv.gz
 data/*.parquet
 data/*.xlsx
-!data/readme.md
-!data/LICENSE.txt
-!data/clean/*.parquet
-!data/WHO-COVID-19-global-data.xlsx
+data/clean/*.parquet
 
 # Temporary files
 *.bak
 *.backup
-test_*
-run_*
 temp/
 tmp/
-
-# Ignore accidental requirements corruption:
-=*.0
-# Large data files - DO NOT COMMIT
-data/clean/*.parquet
-data/WHO-COVID-19-global-data.xlsx
-data/flightlist_*.csv.gz
