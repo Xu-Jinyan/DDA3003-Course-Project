@@ -63,7 +63,7 @@
         #map-container { width: 100%; height: 100vh; }
 
         /* ── Shared panel ── */
-        .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 8px; backdrop-filter: blur(6px); }
+        .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 8px; }
 
         /* ── Dashboard ── */
         #dashboard { top: 20px; left: 20px; padding: 12px 18px; pointer-events: none; min-width: 210px; }
@@ -202,13 +202,12 @@
         .country:hover { stroke: #58a6ff; stroke-width: 1.5px; }
         .country.selected { stroke: #58a6ff !important; stroke-width: 2px !important; }
         .country.dimmed { opacity: .2; }
-        .flight-path { fill: none; stroke-width: 1.2px; opacity: .65; stroke-dasharray: 5,5; animation: dash 2s linear infinite; }
+        .flight-path { fill: none; stroke-width: 1.2px; opacity: .6; stroke-dasharray: 4,5; }
         .flight-path.hi { stroke-width: 2.2px; opacity: 1; }
         .flight-path.lo { opacity: .1; }
         .airport { fill: #58a6ff; stroke: var(--airport-ring); stroke-width: 1px; cursor: pointer; transition: r .15s, fill .15s; }
         .airport:hover, .airport.sel { fill: var(--date-color); stroke: #58a6ff; stroke-width: 1.5px; }
-        .particle { pointer-events: none; }
-        @keyframes dash { to { stroke-dashoffset: -10; } }
+        #particle-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -399,6 +398,9 @@ const S = {
     idx: 0,
     snap: null,               // current snapshot
     riskMap: {},              // ISO3 -> risk 0-1
+    riskArr: null,            // Float32Array [lon,lat,risk, ...] for nearestRisk
+    riskArrLen: 0,
+    countryDataMap: new Map(),// ISO3 -> country snapshot object (O(1) tooltip lookup)
     centroids: {},            // ISO3 -> [lon, lat]
     filterSet: new Set(),
     mapBase: '#21262d',
@@ -437,8 +439,14 @@ zoomG.append('path').datum(d3.geoGraticule()()).attr('class','graticule').attr('
 const mapL = zoomG.append('g');
 const flightL = zoomG.append('g');
 const airportL = zoomG.append('g');
-const particleL = zoomG.append('g');
 const tip = d3.select('#tooltip');
+
+// Canvas overlay for particles — avoids per-frame SVG DOM writes
+const pCanvas = document.createElement('canvas');
+pCanvas.id = 'particle-canvas';
+pCanvas.width = W; pCanvas.height = H;
+document.getElementById('map-container').appendChild(pCanvas);
+const pCtx = pCanvas.getContext('2d');
 
 // Color scales
 const colorCum  = d3.scaleSequential(d3.interpolateYlOrRd).domain([0,1]);
@@ -493,14 +501,29 @@ function refreshMap() {
     const scale = isNew ? colorNew : colorCum;
 
     S.riskMap = {};
+    // O(1) country data lookup used by onCtryMove
+    S.countryDataMap = new Map();
     let maxV = 1;
     snap.countries.forEach(c => {
         const v = isNew ? c.newCases : c.cases;
         if (v > maxV) maxV = v;
+        S.countryDataMap.set(c.countryCode, c);
     });
     snap.countries.forEach(c => {
         S.riskMap[c.countryCode] = (isNew ? c.newCases : c.cases) / maxV;
     });
+
+    // Flat typed array for nearestRisk — only countries WITH data (~50), not all 200
+    // Layout: [lon0, lat0, risk0, lon1, lat1, risk1, ...]
+    const arr = new Float32Array(snap.countries.length * 3);
+    let ai = 0;
+    snap.countries.forEach(c => {
+        const cen = S.centroids[c.countryCode];
+        if (!cen) return;
+        arr[ai++] = cen[0]; arr[ai++] = cen[1];
+        arr[ai++] = S.riskMap[c.countryCode] || 0;
+    });
+    S.riskArr = arr; S.riskArrLen = ai;
 
     const ctry = mapL.selectAll('.country');
     ctry.classed('dimmed', false)
@@ -518,7 +541,7 @@ function refreshMap() {
 // TOOLTIP / COUNTRY CLICK
 // ================================================================
 function onCtryMove(event, d) {
-    const info = S.snap && S.snap.countries.find(c => c.countryCode === d.id);
+    const info = S.snap && S.countryDataMap?.get(d.id);
     let html = `<b>${d.properties.name || d.id}</b>`;
     if (info) {
         html += `<br/>累计: <span style="color:#ff7b72">${info.cases.toLocaleString()}</span>`;
@@ -695,57 +718,89 @@ function highlightRoutes() {
 // ================================================================
 // FLIGHTS + RISK COLORING
 // ================================================================
-function nearestRisk(coords) {
-    let best=0, minD=Infinity;
-    for (const iso3 in S.centroids) {
-        const c=S.centroids[iso3], dx=c[0]-coords[0], dy=c[1]-coords[1], d2=dx*dx+dy*dy;
-        if (d2<minD) { minD=d2; best=S.riskMap[iso3]||0; }
+
+// Uses flat Float32Array built in refreshMap — ~50 entries vs 200 object lookups
+function nearestRisk(lon, lat) {
+    let best = 0, minD = Infinity;
+    const arr = S.riskArr, len = S.riskArrLen || 0;
+    for (let i = 0; i < len; i += 3) {
+        const dx = arr[i] - lon, dy = arr[i+1] - lat, d2 = dx*dx + dy*dy;
+        if (d2 < minD) { minD = d2; best = arr[i+2]; }
     }
     return best;
 }
 
+// Pure-JS path sampling via d3.geoInterpolate — no DOM API, no layout trigger
+function samplePathGeo(source, target, n = 40) {
+    const pts = new Float32Array(n * 2);
+    const interp = d3.geoInterpolate(source, target);
+    for (let i = 0; i < n; i++) {
+        const xy = proj(interp(i / (n - 1)));
+        if (!xy) continue;
+        pts[i * 2]     = xy[0];
+        pts[i * 2 + 1] = xy[1];
+    }
+    return pts;
+}
+
 function refreshFlights(flights) {
-    // stop particles
-    if (S.rafId) { cancelAnimationFrame(S.rafId); S.rafId=null; }
-    particleL.selectAll('*').remove();
+    if (S.rafId) { cancelAnimationFrame(S.rafId); S.rafId = null; }
+    pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
     S.particles = [];
 
     flightL.selectAll('.flight-path')
-        .data(flights, (_,i)=>i)
+        .data(flights, (_, i) => i)
         .join('path')
-        .attr('class','flight-path')
+        .attr('class', 'flight-path')
         .each(function(d) {
-            const r = (nearestRisk(d.source) + nearestRisk(d.target)) / 2;
+            const r = (nearestRisk(d.source[0], d.source[1]) + nearestRisk(d.target[0], d.target[1])) / 2;
             d._col = colorFlight(r);
             d3.select(this).attr('stroke', d._col);
         })
-        .attr('d', d => pathGen({type:'LineString', coordinates:[d.source,d.target]}));
+        .attr('d', d => pathGen({type: 'LineString', coordinates: [d.source, d.target]}));
 
     if (S.selAirport) highlightRoutes();
 
-    // spawn particles — 每条航线只放 1 个粒子
-    flightL.selectAll('.flight-path').each(function(d) {
-        const el=this, len=el.getTotalLength();
-        if (len<1) return;
-        const circle = particleL.append('circle')
-            .attr('class','particle').attr('r',2.5).attr('fill', S.isLight ? '#1a4a7a' : '#ffffff').attr('opacity',.9)
-            .node();
-        S.particles.push({ el:circle, pathEl:el, t:Math.random(), spd:0.0004+Math.random()*0.0003, len });
+    // Sample arc geometry in pure JS — no DOM API calls
+    flights.forEach(d => {
+        const pts = samplePathGeo(d.source, d.target, 40);
+        S.particles.push({ pts, t: Math.random(), spd: 0.0004 + Math.random() * 0.0003 });
     });
 
     if (S.particles.length) {
-        let lastTs=0;
+        let lastTs = 0;
+        const N = 40;
         function frame(ts) {
-            // 限制 30fps，降低 CPU 占用
-            if (ts - lastTs < 33) { S.rafId=requestAnimationFrame(frame); return; }
-            const dt=Math.min(ts-lastTs, 50); lastTs=ts;
-            S.particles.forEach(p=>{
-                p.t+=p.spd*dt; if(p.t>1) p.t-=1;
-                try { const pt=p.pathEl.getPointAtLength(p.t*p.len); p.el.setAttribute('cx',pt.x); p.el.setAttribute('cy',pt.y); } catch(_){}
+            if (ts - lastTs < 33) { S.rafId = requestAnimationFrame(frame); return; }
+            const dt = Math.min(ts - lastTs, 50); lastTs = ts;
+
+            const t = d3.zoomTransform(svg.node());
+            pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+            pCtx.save();
+            pCtx.translate(t.x, t.y);
+            pCtx.scale(t.k, t.k);
+
+            const r = 2.5 / t.k;
+            const col = S.isLight ? '#1a4a7a' : '#ffffff';
+
+            // Batch all particles into one beginPath → fill call (single GPU flush)
+            pCtx.fillStyle = col;
+            pCtx.globalAlpha = 0.88;
+            pCtx.beginPath();
+            S.particles.forEach(p => {
+                p.t += p.spd * dt;
+                if (p.t > 1) p.t -= 1;
+                const idx = Math.min(Math.floor(p.t * N), N - 1) * 2;
+                const px = p.pts[idx], py = p.pts[idx + 1];
+                pCtx.moveTo(px + r, py);   // moveTo prevents arcs from connecting
+                pCtx.arc(px, py, r, 0, 6.2832);
             });
-            S.rafId=requestAnimationFrame(frame);
+            pCtx.fill();
+
+            pCtx.restore();
+            S.rafId = requestAnimationFrame(frame);
         }
-        S.rafId=requestAnimationFrame(frame);
+        S.rafId = requestAnimationFrame(frame);
     }
 }
 
@@ -1085,11 +1140,6 @@ function applyTheme(light) {
     zoomG.select('.globe-bg').attr('fill', style.getPropertyValue('--globe').trim());
     zoomG.select('.graticule').attr('stroke', style.getPropertyValue('--graticule').trim());
 
-    // 粒子颜色切换
-    const pCol = light ? '#1a4a7a' : '#ffffff';
-    particleL.selectAll('.particle').attr('fill', pCol);
-    S.particles.forEach(p => p.col = pCol);
-
     // 刷新地图基础色
     if (S.snap) refreshMap();
 }
@@ -1107,6 +1157,7 @@ document.getElementById('close-panel').addEventListener('click', clearCtry);
 window.addEventListener('resize', () => {
     const nW=window.innerWidth, nH=window.innerHeight;
     svg.attr('width',nW).attr('height',nH);
+    pCanvas.width = nW; pCanvas.height = nH;
     proj.scale(nW/5.5).translate([nW/2,nH/2]);
     zoomG.selectAll('.globe-bg,.graticule').attr('d',pathGen);
     mapL.selectAll('.country').attr('d',pathGen);
