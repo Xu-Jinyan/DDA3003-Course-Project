@@ -191,6 +191,31 @@ def get_global_trend():
     except Exception as e:
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
+@app.route('/analysis')
+def analysis_page():
+    """深度分析页面"""
+    return app.send_static_file('analysis.html')
+
+@app.route('/api/top-countries-trend', methods=['GET'])
+def get_top_countries_trend():
+    """获取累计确诊最高的 N 个国家的完整历史（用于分析页的堆叠面积、死亡率等图）"""
+    try:
+        n = request.args.get('n', 10, type=int)
+        n = max(1, min(n, 30))
+        data = data_service.get_top_countries_trend(n)
+        return jsonify({'countries': data})
+    except Exception as e:
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+@app.route('/api/flight-trend', methods=['GET'])
+def get_flight_trend():
+    """获取全球每日航班总数趋势（用于疫情-航班联动图）"""
+    try:
+        trend = data_service.get_flight_trend()
+        return jsonify({'trend': trend})
+    except Exception as e:
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
 @app.route('/api/country-history', methods=['GET'])
 def get_country_history():
     """获取指定国家的历史疫情数据"""
