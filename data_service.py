@@ -29,6 +29,12 @@ class DataService:
         # 全局趋势缓存
         self._global_trend_cache = None
 
+        # 航班趋势缓存
+        self._flight_trend_cache = None
+
+        # Top 国家趋势缓存
+        self._top_countries_cache = {}
+
         # ISO2到ISO3国家代码映射（WHO数据使用ISO2，GeoJSON使用ISO3）
         self.iso2_to_iso3_mapping = {
             'AF': 'AFG', 'AL': 'ALB', 'DZ': 'DZA', 'AS': 'ASM', 'AD': 'AND', 'AO': 'AGO',
@@ -411,6 +417,79 @@ class DataService:
             return result
         except Exception as e:
             print(f"Error computing global trend: {e}")
+            return []
+
+    def get_flight_trend(self):
+        """返回每日航班总数时间序列，带缓存。首次调用需读取所有 Parquet 文件的 day 列。"""
+        if self._flight_trend_cache is not None:
+            return self._flight_trend_cache
+        try:
+            parquet_files = sorted(self.clean_data_dir.glob("flightlist_*.parquet"))
+            if not parquet_files:
+                return []
+
+            print(f"Computing flight trend from {len(parquet_files)} files...")
+            all_counts = []
+            for f in parquet_files:
+                # 只读 day 列，列式存储下非常快
+                df = pd.read_parquet(f, columns=['day'])
+                dates = pd.to_datetime(df['day']).dt.date
+                counts = dates.value_counts().reset_index()
+                counts.columns = ['date', 'count']
+                all_counts.append(counts)
+
+            combined = pd.concat(all_counts, ignore_index=True)
+            combined = combined.groupby('date', as_index=False)['count'].sum()
+            combined = combined.sort_values('date')
+
+            result = [
+                {'date': row['date'].strftime('%Y-%m-%d'), 'count': int(row['count'])}
+                for _, row in combined.iterrows()
+            ]
+            self._flight_trend_cache = result
+            print(f"Flight trend cached: {len(result)} days")
+            return result
+        except Exception as e:
+            print(f"Error computing flight trend: {e}")
+            import traceback; traceback.print_exc()
+            return []
+
+    def get_top_countries_trend(self, n=10):
+        """返回累计确诊最高的 N 个国家的完整历史（含死亡）。"""
+        if self.who_data is None:
+            return []
+        if n in self._top_countries_cache:
+            return self._top_countries_cache[n]
+        try:
+            latest_date = self.who_data['Date_reported'].max()
+            latest = self.who_data[self.who_data['Date_reported'] == latest_date]
+            top = latest.nlargest(n, 'Cumulative_cases')
+
+            result = []
+            for _, row in top.iterrows():
+                iso2 = row['Country_code']
+                if pd.isna(iso2):
+                    continue
+                iso3 = self.iso2_to_iso3_mapping.get(str(iso2), str(iso2))
+                cdf = self.who_data[self.who_data['Country_code'] == iso2].sort_values('Date_reported')
+                history = []
+                for _, r in cdf.iterrows():
+                    history.append({
+                        'date':     r['Date_reported'].strftime('%Y-%m-%d'),
+                        'cases':    int(r['Cumulative_cases']) if pd.notna(r['Cumulative_cases']) else 0,
+                        'newCases': int(r['New_cases'])        if pd.notna(r['New_cases'])        else 0,
+                        'deaths':   int(r['Cumulative_deaths']) if 'Cumulative_deaths' in self.who_data.columns and pd.notna(r.get('Cumulative_deaths')) else 0,
+                    })
+                result.append({
+                    'countryCode': iso3,
+                    'countryName': str(row['Country']),
+                    'history': history
+                })
+            self._top_countries_cache[n] = result
+            return result
+        except Exception as e:
+            print(f"Error computing top countries trend: {e}")
+            import traceback; traceback.print_exc()
             return []
 
     def get_country_history(self, iso3_code):

@@ -240,6 +240,7 @@
             <div id="filter-list"></div>
         </div>
     </div>
+    <a class="ctrl-btn" href="/analysis" style="text-decoration:none;display:inline-block;">深度分析</a>
     <button class="ctrl-btn" id="help-btn">使用说明</button>
     <button class="ctrl-btn" id="theme-btn">☀️ 浅色</button>
     <button class="ctrl-btn" id="zoom-reset-btn">重置视图</button>
@@ -359,7 +360,7 @@
                     <div class="help-item"><span class="help-key">▶ 播放</span><span class="help-desc">自动按周推进，展示疫情与航班的时间演变</span></div>
                     <div class="help-item"><span class="help-key">速度选择</span><span class="help-desc">0.5× / 1× / 2× / 4× 控制播放快慢</span></div>
                     <div class="help-item"><span class="help-key">拖动滑条</span><span class="help-desc">跳转到任意日期</span></div>
-                    <div class="help-item"><span class="help-key">趋势图悬浮</span><span class="help-desc">鼠标移到上方折线图可查看任意日期的全球病例数</span></div>
+                    <div class="help-item"><span class="help-key">趋势图悬浮</span><span class="help-desc">上方双轴图：红线=疫情（左轴，对数），绿线=全球航班数（右轴，线性）；悬浮可查任意日期的具体数值</span></div>
                 </div>
             </div>
 
@@ -412,6 +413,7 @@ const S = {
     rafId: null,
     snapCache: new Map(),
     globalTrend: [],
+    flightTrend: [],          // [{date, count}] — for pandemic-vs-flights overlay
 };
 
 // ================================================================
@@ -821,35 +823,65 @@ let trendReady=false, trendX, trendCurLine, trendDat=[];
 const trendTip = d3.select('#trend-tip');
 const parseDateFn = d3.timeParse('%Y-%m-%d');
 
-function buildTrendChart(trend) {
+function buildTrendChart() {
+    const trend   = S.globalTrend;
+    const flights = S.flightTrend;
     const isNew = S.mode === 'new';
     const cont = document.getElementById('timeline-area');
     const cW = cont.offsetWidth, cH = 58;
-    const mg = {t:6,r:8,b:18,l:48};
+    const mg = {t:6, r:42, b:18, l:48};   // extra right margin for 2nd axis label
     const iw = cW-mg.l-mg.r, ih = cH-mg.t-mg.b;
 
-    // 全量数据（两种指标）
-    trendDat = trend.map(d=>({
+    // Merge pandemic + flight data by date (flights may cover dates before WHO data)
+    const flightMap = new Map(flights.map(d => [d.date, d.count]));
+    const trendDates = new Set(trend.map(d => d.date));
+    trendDat = trend.map(d => ({
         dt: parseDateFn(d.date),
         cum: d.globalCases,
-        nw:  d.globalNewCases
+        nw:  d.globalNewCases,
+        fl:  flightMap.get(d.date) || null
     }));
+    flights.forEach(f => {
+        if (!trendDates.has(f.date)) {
+            trendDat.push({ dt: parseDateFn(f.date), cum: 0, nw: 0, fl: f.count });
+        }
+    });
+    trendDat.sort((a, b) => a.dt - b.dt);
+
+    // Clip to timeline range (flight-data driven) so both axes tell the same story
+    if (S.dateRange) {
+        const startDt = parseDateFn(S.dateRange.start.split('T')[0]);
+        const endDt   = parseDateFn(S.dateRange.end.split('T')[0]);
+        trendDat = trendDat.filter(d => d.dt >= startDt && d.dt <= endDt);
+    }
 
     const tSvg = d3.select('#trend-svg').attr('width',cW).attr('height',cH);
     tSvg.selectAll('*').remove();
     const g = tSvg.append('g').attr('transform',`translate(${mg.l},${mg.t})`);
 
     trendX = d3.scaleTime().domain(d3.extent(trendDat,d=>d.dt)).range([0,iw]);
-    const vals = trendDat.map(d => isNew ? d.nw : d.cum);
-    const tY = d3.scaleLog().domain([1, d3.max(vals)||1]).range([ih,0]).clamp(true);
     const getV = d => isNew ? d.nw : d.cum;
+    const pandVals   = trendDat.filter(d => getV(d) > 0).map(getV);
+    const flightVals = trendDat.filter(d => d.fl != null).map(d => d.fl);
+    const tY = d3.scaleLog().domain([1, d3.max(pandVals)||1]).range([ih,0]).clamp(true);
+    const fY = d3.scaleLinear().domain([0, d3.max(flightVals)||1]).range([ih,0]);
 
-    g.append('path').datum(trendDat).attr('fill','rgba(255,123,114,.13)')
+    // Pandemic: area + red line (left axis, log)
+    const pData = trendDat.filter(d => getV(d) > 0);
+    g.append('path').datum(pData).attr('fill','rgba(255,123,114,.13)')
         .attr('d', d3.area().x(d=>trendX(d.dt)).y0(ih).y1(d=>tY(Math.max(1,getV(d)))).curve(d3.curveBasis));
-    g.append('path').datum(trendDat).attr('fill','none').attr('stroke','#ff7b72').attr('stroke-width',1.2)
+    g.append('path').datum(pData).attr('fill','none').attr('stroke','#ff7b72').attr('stroke-width',1.2)
         .attr('d', d3.line().x(d=>trendX(d.dt)).y(d=>tY(Math.max(1,getV(d)))).curve(d3.curveBasis));
 
-    // X 轴
+    // Flights: green line (right axis, linear)
+    const fData = trendDat.filter(d => d.fl != null);
+    if (fData.length) {
+        g.append('path').datum(fData).attr('fill','none').attr('stroke','#3fb950')
+            .attr('stroke-width',1.2).attr('opacity',.9)
+            .attr('d', d3.line().x(d=>trendX(d.dt)).y(d=>fY(d.fl)).curve(d3.curveBasis));
+    }
+
+    // X axis
     g.append('g').attr('transform',`translate(0,${ih})`).call(
         d3.axisBottom(trendX).ticks(d3.timeYear.every(1)).tickFormat(d3.timeFormat('%Y')).tickSize(3)
     ).call(ax => {
@@ -857,21 +889,22 @@ function buildTrendChart(trend) {
         ax.selectAll('.domain,.tick line').attr('stroke','var(--border)');
     });
 
-    // Y 轴标签
+    // Axis labels
     tSvg.append('text').attr('x',3).attr('y',14)
-        .attr('fill','var(--text-dim)').style('font-size','9px')
-        .attr('id','trend-ylabel').text(isNew ? '新增' : '累计');
+        .attr('fill','#ff7b72').style('font-size','9px').style('font-weight','600')
+        .text(isNew ? '新增' : '累计');
+    tSvg.append('text').attr('x', cW-38).attr('y',14)
+        .attr('fill','#3fb950').style('font-size','9px').style('font-weight','600')
+        .text('航班数');
 
-    // 当前日期指示线
+    // Current date indicator
     trendCurLine = g.append('line').attr('stroke','#58a6ff').attr('stroke-width',1.5)
         .attr('y1',0).attr('y2',ih).attr('opacity',.8);
 
-    // ── 悬浮 tooltip ──
+    // Hover interaction
     const bisect = d3.bisector(d=>d.dt).center;
     const hoverLine = g.append('line').attr('stroke','#ffffff').attr('stroke-width',1)
         .attr('y1',0).attr('y2',ih).attr('opacity',0).attr('pointer-events','none');
-    const hoverDot = g.append('circle').attr('r',3).attr('fill','#ff7b72')
-        .attr('opacity',0).attr('pointer-events','none');
 
     g.append('rect').attr('width',iw).attr('height',ih).attr('fill','none')
         .attr('pointer-events','all')
@@ -880,22 +913,21 @@ function buildTrendChart(trend) {
             const date = trendX.invert(mx);
             const i = Math.max(0, Math.min(bisect(trendDat, date), trendDat.length-1));
             const d = trendDat[i];
-            const v = getV(d);
-            const cx = trendX(d.dt), cy = tY(Math.max(1,v));
-
+            const cx = trendX(d.dt);
             hoverLine.attr('x1',cx).attr('x2',cx).attr('opacity',.5);
-            hoverDot.attr('cx',cx).attr('cy',cy).attr('opacity',1);
 
+            const v = getV(d);
             const label = isNew ? '新增' : '累计';
-            const fmt = v>=1e6 ? (v/1e6).toFixed(2)+'M' : v>=1e3 ? (v/1e3).toFixed(0)+'K' : v;
-            trendTip.style('opacity',1)
-                .html(`<b>${d3.timeFormat('%Y-%m-%d')(d.dt)}</b><br/>${label}: <span style="color:#ff7b72">${fmt}</span>`)
-                .style('left',(event.clientX+12)+'px')
-                .style('top',(event.clientY-46)+'px');
+            const fmt = n => n>=1e6 ? (n/1e6).toFixed(2)+'M' : n>=1e3 ? (n/1e3).toFixed(0)+'K' : n;
+            let html = `<b>${d3.timeFormat('%Y-%m-%d')(d.dt)}</b>`;
+            if (v > 0) html += `<br/>${label}: <span style="color:#ff7b72">${fmt(v)}</span>`;
+            if (d.fl != null) html += `<br/>航班: <span style="color:#3fb950">${d.fl.toLocaleString()}</span>`;
+
+            trendTip.style('opacity',1).html(html)
+                .style('left',(event.clientX+12)+'px').style('top',(event.clientY-62)+'px');
         })
         .on('mouseleave', () => {
             hoverLine.attr('opacity',0);
-            hoverDot.attr('opacity',0);
             trendTip.style('opacity',0);
         });
 
@@ -1009,7 +1041,7 @@ document.querySelectorAll('.mode-btn').forEach(btn => {
         document.getElementById('legend-map-title').textContent = '国家颜色 · ' + (isNew ? '新增确诊' : '累计确诊');
         document.getElementById('legend-gradient').style.background = LEGEND_GRAD[S.mode];
         // 重建趋势图（切换数据和纵轴标签）
-        if (S.globalTrend.length) buildTrendChart(S.globalTrend);
+        if (S.globalTrend.length) buildTrendChart();
         if (S.dates[S.idx]) moveTrendCursor(S.dates[S.idx]);
         if (S.snap) { refreshMap(); refreshLeaderboard(S.snap); }
     });
@@ -1194,9 +1226,13 @@ async function init() {
         renderAirports(apData.airports || []);
 
         showLoad('正在加载趋势数据…');
-        const trendData = await api('/api/global-trend');
+        const [trendData, flightTrendData] = await Promise.all([
+            api('/api/global-trend'),
+            api('/api/flight-trend'),
+        ]);
         S.globalTrend = trendData.trend || [];
-        if (S.globalTrend.length) buildTrendChart(S.globalTrend);
+        S.flightTrend = flightTrendData.trend || [];
+        if (S.globalTrend.length) buildTrendChart();
 
         showLoad(`正在加载 ${S.dates[0]} 数据…`);
         await update(S.dates[0]);
