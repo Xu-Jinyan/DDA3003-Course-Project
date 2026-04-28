@@ -191,11 +191,6 @@ def get_global_trend():
     except Exception as e:
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
-@app.route('/analysis')
-def analysis_page():
-    """深度分析页面"""
-    return app.send_static_file('analysis.html')
-
 @app.route('/api/top-countries-trend', methods=['GET'])
 def get_top_countries_trend():
     """获取累计确诊最高的 N 个国家的完整历史（用于分析页的堆叠面积、死亡率等图）"""
